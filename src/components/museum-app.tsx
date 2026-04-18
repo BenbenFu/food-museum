@@ -19,6 +19,17 @@ const todayLocal = (): string => {
   return localDate.toISOString().slice(0, 10);
 };
 
+const parseErrorText = async (response: Response, fallback: string): Promise<string> => {
+  const text = await response.text();
+  if (!text) return fallback;
+  try {
+    const payload = JSON.parse(text) as { message?: string };
+    return payload.message ?? fallback;
+  } catch {
+    return text.slice(0, 180);
+  }
+};
+
 const fetchEntries = async (cursor?: string): Promise<EntriesResponse> => {
   const params = new URLSearchParams();
   if (cursor) params.set("cursor", cursor);
@@ -27,8 +38,10 @@ const fetchEntries = async (cursor?: string): Promise<EntriesResponse> => {
     method: "GET",
     cache: "no-store"
   });
+  if (!response.ok) {
+    throw new Error(await parseErrorText(response, "加载记录失败"));
+  }
 
-  if (!response.ok) throw new Error("Failed to load entries");
   return (await response.json()) as EntriesResponse;
 };
 
@@ -48,19 +61,26 @@ const uploadEntry = (formData: FormData, onProgress: (value: number) => void): P
         try {
           resolve(JSON.parse(xhr.responseText) as FoodEntry);
         } catch {
-          reject(new Error("Invalid server response"));
+          reject(new Error("服务端返回格式异常"));
         }
-      } else {
-        try {
-          const payload = JSON.parse(xhr.responseText) as { message?: string };
-          reject(new Error(payload.message ?? "Upload failed"));
-        } catch {
-          reject(new Error("Upload failed"));
-        }
+        return;
+      }
+
+      const raw = xhr.responseText?.trim();
+      if (!raw) {
+        reject(new Error("上传失败"));
+        return;
+      }
+
+      try {
+        const payload = JSON.parse(raw) as { message?: string };
+        reject(new Error(payload.message ?? "上传失败"));
+      } catch {
+        reject(new Error(raw.slice(0, 180)));
       }
     };
 
-    xhr.onerror = () => reject(new Error("Network error"));
+    xhr.onerror = () => reject(new Error("网络异常，请重试"));
     xhr.send(formData);
   });
 
@@ -89,7 +109,7 @@ export function MuseumApp() {
       setNextCursor(payload.nextCursor);
       setLoadError(null);
     } catch (error) {
-      setLoadError(error instanceof Error ? error.message : "Load failed");
+      setLoadError(error instanceof Error ? error.message : "加载失败");
     } finally {
       setInitialLoading(false);
       setIsLoadingMore(false);
@@ -110,7 +130,7 @@ export function MuseumApp() {
           void loadPage(nextCursor, true);
         }
       },
-      { rootMargin: "300px" }
+      { rootMargin: "280px" }
     );
 
     observer.observe(sentinelRef.current);
@@ -122,7 +142,7 @@ export function MuseumApp() {
   const onUpload = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!file) {
-      setUpload({ loading: false, progress: 0, error: "Please choose an image" });
+      setUpload({ loading: false, progress: 0, error: "请选择一张照片" });
       return;
     }
 
@@ -153,88 +173,105 @@ export function MuseumApp() {
       setUpload({
         loading: false,
         progress: 0,
-        error: error instanceof Error ? error.message : "Upload failed"
+        error: error instanceof Error ? error.message : "上传失败"
       });
     }
   };
 
   const onDelete = async (entry: FoodEntry) => {
-    if (!window.confirm(`Delete entry: ${entry.food_name}?`)) return;
+    if (!window.confirm(`确定删除「${entry.food_name}」吗？`)) return;
 
     const response = await fetch(`/api/entries/${entry.id}`, { method: "DELETE" });
     if (!response.ok) {
-      const payload = (await response.json().catch(() => ({}))) as { message?: string };
-      alert(payload.message ?? "Delete failed");
+      alert(await parseErrorText(response, "删除失败"));
       return;
     }
 
     setEntries((current) => current.filter((item) => item.id !== entry.id));
   };
 
-  const recordCountText = useMemo(() => `${entries.length} memories`, [entries.length]);
+  const recordCountText = useMemo(() => `馆藏 ${entries.length} 份`, [entries.length]);
 
   return (
-    <main className="mx-auto min-h-screen w-full max-w-4xl px-4 py-5 sm:px-6">
-      <section className="rounded-3xl bg-white/90 p-4 shadow-lg ring-1 ring-slate-200 backdrop-blur sm:p-6">
-        <h1 className="text-2xl font-bold tracking-tight text-slate-900">My Food Museum</h1>
-        <p className="mt-2 text-sm text-slate-600">Capture meals and keep them in your personal timeline.</p>
-
-        <div className="mt-3 flex flex-wrap gap-2 text-xs">
-          <a className="rounded-full bg-slate-900 px-3 py-1.5 text-white" href="/api/export?format=json">
-            Export JSON
-          </a>
-          <a className="rounded-full bg-slate-200 px-3 py-1.5 text-slate-800" href="/api/export?format=csv">
-            Export CSV
-          </a>
-          <span className="rounded-full bg-amber-100 px-3 py-1.5 text-amber-800">{recordCountText}</span>
+    <main className="mx-auto min-h-screen w-full max-w-5xl px-4 pb-10 pt-6 sm:px-6">
+      <section className="museum-panel rounded-3xl p-5 sm:p-7">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="mb-2 flex items-center gap-2 text-xs text-[var(--muted)]">
+              <span className="museum-dot" />
+              PERSONAL FOOD MUSEUM
+            </p>
+            <h1 className="museum-title text-3xl leading-tight text-[var(--ink)] sm:text-4xl">
+              我的食物博物馆
+            </h1>
+            <p className="mt-2 max-w-xl text-sm text-[var(--muted)]">
+              记录每日一餐，收藏生活细节。上传你的食物照片，沉淀成专属时间画廊。
+            </p>
+          </div>
+          <span className="rounded-full border border-[var(--line)] bg-white/80 px-3 py-1 text-xs text-[var(--muted)]">
+            {recordCountText}
+          </span>
         </div>
 
-        <form className="mt-4 space-y-3" onSubmit={onUpload}>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <label className="block">
-              <span className="mb-1 block text-xs text-slate-600">Date *</span>
-              <input
-                className="h-11 w-full rounded-xl border border-slate-200 px-3 outline-none focus:border-slate-400"
-                onChange={(event) => setEatenAt(event.target.value)}
-                required
-                type="date"
-                value={eatenAt}
-              />
-            </label>
-            <label className="block">
-              <span className="mb-1 block text-xs text-slate-600">Food Name *</span>
-              <input
-                className="h-11 w-full rounded-xl border border-slate-200 px-3 outline-none focus:border-slate-400"
-                maxLength={80}
-                onChange={(event) => setFoodName(event.target.value)}
-                placeholder="Beef noodle soup"
-                required
-                value={foodName}
-              />
-            </label>
-            <label className="block">
-              <span className="mb-1 block text-xs text-slate-600">Place / Brand (optional)</span>
-              <input
-                className="h-11 w-full rounded-xl border border-slate-200 px-3 outline-none focus:border-slate-400"
-                maxLength={80}
-                onChange={(event) => setPlaceBrand(event.target.value)}
-                placeholder="Local cafe"
-                value={placeBrand}
-              />
-            </label>
-            <label className="block">
-              <span className="mb-1 block text-xs text-slate-600">Price (optional)</span>
-              <input
-                className="h-11 w-full rounded-xl border border-slate-200 px-3 outline-none focus:border-slate-400"
-                maxLength={24}
-                onChange={(event) => setPrice(event.target.value)}
-                placeholder="28"
-                value={price}
-              />
-            </label>
-          </div>
+        <div className="mt-4 flex flex-wrap gap-2 text-xs">
+          <a
+            className="rounded-full bg-[var(--accent)] px-3 py-1.5 text-white transition hover:brightness-95"
+            href="/api/export?format=json"
+          >
+            导出 JSON
+          </a>
+          <a
+            className="rounded-full bg-[var(--accent-2)] px-3 py-1.5 text-white transition hover:brightness-95"
+            href="/api/export?format=csv"
+          >
+            导出 CSV
+          </a>
+        </div>
 
-          <label className="flex h-24 w-full cursor-pointer items-center justify-center rounded-2xl border border-dashed border-slate-300 bg-slate-50 text-sm text-slate-600">
+        <form className="mt-5 grid gap-3 sm:grid-cols-2" onSubmit={onUpload}>
+          <label className="block">
+            <span className="mb-1 block text-xs text-[var(--muted)]">日期 *</span>
+            <input
+              className="h-12 w-full rounded-2xl border border-[var(--line)] bg-white/90 px-4 outline-none focus:border-[var(--accent)]"
+              onChange={(event) => setEatenAt(event.target.value)}
+              required
+              type="date"
+              value={eatenAt}
+            />
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-xs text-[var(--muted)]">食物名 *</span>
+            <input
+              className="h-12 w-full rounded-2xl border border-[var(--line)] bg-white/90 px-4 outline-none focus:border-[var(--accent)]"
+              maxLength={80}
+              onChange={(event) => setFoodName(event.target.value)}
+              placeholder="例：牛肉拉面"
+              required
+              value={foodName}
+            />
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-xs text-[var(--muted)]">地点/品牌（可选）</span>
+            <input
+              className="h-12 w-full rounded-2xl border border-[var(--line)] bg-white/90 px-4 outline-none focus:border-[var(--accent)]"
+              maxLength={80}
+              onChange={(event) => setPlaceBrand(event.target.value)}
+              placeholder="例：楼下小馆"
+              value={placeBrand}
+            />
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-xs text-[var(--muted)]">价格（可选）</span>
+            <input
+              className="h-12 w-full rounded-2xl border border-[var(--line)] bg-white/90 px-4 outline-none focus:border-[var(--accent)]"
+              maxLength={24}
+              onChange={(event) => setPrice(event.target.value)}
+              placeholder="例：28"
+              value={price}
+            />
+          </label>
+
+          <label className="sm:col-span-2 flex h-28 w-full cursor-pointer items-center justify-center rounded-2xl border border-dashed border-[var(--line)] bg-white/70 text-sm text-[var(--muted)]">
             <input
               accept="image/*"
               capture="environment"
@@ -243,45 +280,56 @@ export function MuseumApp() {
               required
               type="file"
             />
-            {file ? `Selected: ${file.name}` : "Tap to upload meal photo"}
+            {file ? `已选择：${file.name}` : "点击上传食物照片（可直接拍照）"}
           </label>
 
           <button
-            className="h-11 w-full rounded-xl bg-slate-900 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-60"
+            className="sm:col-span-2 h-12 rounded-2xl bg-[var(--ink)] text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-60"
             disabled={submitDisabled}
             type="submit"
           >
-            {upload.loading ? `Uploading ${upload.progress}%` : "Save Entry"}
+            {upload.loading ? `上传中 ${upload.progress}%` : "保存到博物馆"}
           </button>
-          {upload.error ? <p className="text-xs text-rose-600">{upload.error}</p> : null}
+          {upload.error ? (
+            <p className="sm:col-span-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+              {upload.error}
+            </p>
+          ) : null}
         </form>
       </section>
 
-      <section className="mt-5 rounded-3xl bg-white/80 p-4 shadow ring-1 ring-slate-200 sm:p-5">
+      <section className="museum-panel mt-5 rounded-3xl p-4 sm:p-6">
         <header className="mb-4 flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-slate-900">Timeline Gallery</h2>
-          {isLoadingMore ? <span className="text-xs text-slate-500">Loading...</span> : null}
+          <h2 className="museum-title text-2xl text-[var(--ink)]">时间轴画廊</h2>
+          {isLoadingMore ? <span className="text-xs text-[var(--muted)]">加载更多中...</span> : null}
         </header>
 
-        {initialLoading ? <p className="text-sm text-slate-500">Loading entries...</p> : null}
-        {loadError ? <p className="text-sm text-rose-600">{loadError}</p> : null}
+        {initialLoading ? <p className="text-sm text-[var(--muted)]">正在加载记录...</p> : null}
         {loadError ? (
-          <button
-            className="mt-2 rounded-full bg-slate-900 px-3 py-1.5 text-xs text-white"
-            onClick={() => void loadPage()}
-            type="button"
-          >
-            Retry
-          </button>
+          <div className="space-y-2 rounded-2xl border border-rose-200 bg-rose-50 p-3">
+            <p className="text-sm text-rose-700">{loadError}</p>
+            <button
+              className="rounded-full bg-rose-600 px-3 py-1.5 text-xs text-white"
+              onClick={() => void loadPage()}
+              type="button"
+            >
+              重新加载
+            </button>
+          </div>
         ) : null}
 
-        {!initialLoading && entries.length === 0 ? (
-          <p className="rounded-2xl bg-slate-50 p-4 text-sm text-slate-600">No entries yet. Add your first meal.</p>
+        {!initialLoading && !entries.length ? (
+          <p className="rounded-2xl border border-[var(--line)] bg-white/70 p-4 text-sm text-[var(--muted)]">
+            还没有记录，先上传今天的第一餐吧。
+          </p>
         ) : null}
 
         <div className="columns-2 gap-3 sm:columns-3">
           {entries.map((entry) => (
-            <article className="mb-3 break-inside-avoid rounded-2xl bg-white p-2 shadow-sm ring-1 ring-slate-100" key={entry.id}>
+            <article
+              className="mb-3 break-inside-avoid rounded-2xl border border-[var(--line)] bg-white/85 p-2 shadow-sm"
+              key={entry.id}
+            >
               <button className="block w-full" onClick={() => setActiveImage(entry)} type="button">
                 <Image
                   alt={entry.food_name}
@@ -294,16 +342,16 @@ export function MuseumApp() {
                 />
               </button>
               <div className="px-1 pb-1 pt-2">
-                <p className="text-sm font-medium text-slate-900">{entry.food_name}</p>
-                <p className="mt-1 text-xs text-slate-500">{formatEatenAt(entry.eaten_at)}</p>
-                {entry.place_brand ? <p className="mt-1 text-xs text-slate-600">{entry.place_brand}</p> : null}
-                {entry.price ? <p className="mt-1 text-xs text-slate-600">$ {entry.price}</p> : null}
+                <p className="text-sm font-semibold text-[var(--ink)]">{entry.food_name}</p>
+                <p className="mt-1 text-xs text-[var(--muted)]">{formatEatenAt(entry.eaten_at)}</p>
+                {entry.place_brand ? <p className="mt-1 text-xs text-[var(--muted)]">{entry.place_brand}</p> : null}
+                {entry.price ? <p className="mt-1 text-xs text-[var(--muted)]">¥{entry.price}</p> : null}
                 <button
-                  className="mt-2 rounded-full bg-rose-50 px-2.5 py-1 text-xs text-rose-700"
+                  className="mt-2 rounded-full border border-rose-200 bg-rose-50 px-2.5 py-1 text-xs text-rose-700"
                   onClick={() => void onDelete(entry)}
                   type="button"
                 >
-                  Delete
+                  删除
                 </button>
               </div>
             </article>
@@ -315,7 +363,12 @@ export function MuseumApp() {
 
       {activeImage ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 px-4">
-          <button aria-label="Close preview" className="absolute inset-0" onClick={() => setActiveImage(null)} type="button" />
+          <button
+            aria-label="Close preview"
+            className="absolute inset-0"
+            onClick={() => setActiveImage(null)}
+            type="button"
+          />
           <div className="relative max-h-[90vh] w-full max-w-lg overflow-hidden rounded-2xl bg-white">
             <Image
               alt={activeImage.food_name}
@@ -326,14 +379,14 @@ export function MuseumApp() {
               width={activeImage.image_width}
             />
             <div className="p-3">
-              <p className="text-sm font-semibold">{activeImage.food_name}</p>
-              <p className="mt-1 text-xs text-slate-600">{activeImage.eaten_at}</p>
+              <p className="text-sm font-semibold text-[var(--ink)]">{activeImage.food_name}</p>
+              <p className="mt-1 text-xs text-[var(--muted)]">{activeImage.eaten_at}</p>
               <button
-                className="mt-3 h-10 w-full rounded-xl bg-slate-900 text-sm text-white"
+                className="mt-3 h-10 w-full rounded-xl bg-[var(--ink)] text-sm text-white"
                 onClick={() => setActiveImage(null)}
                 type="button"
               >
-                Close
+                关闭
               </button>
             </div>
           </div>
