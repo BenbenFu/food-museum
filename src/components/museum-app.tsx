@@ -190,6 +190,11 @@ export function MuseumApp() {
     setEntries((current) => current.filter((item) => item.id !== entry.id));
   };
 
+  const onLogout = async () => {
+    await fetch("/api/auth/logout", { method: "POST" });
+    window.location.href = "/login";
+  };
+
   const recordCountText = useMemo(() => `馆藏 ${entries.length} 份`, [entries.length]);
 
   return (
@@ -208,9 +213,18 @@ export function MuseumApp() {
               记录每日一餐，收藏生活细节。上传你的食物照片，沉淀成专属时间画廊。
             </p>
           </div>
-          <span className="rounded-full border border-[var(--line)] bg-white/80 px-3 py-1 text-xs text-[var(--muted)]">
-            {recordCountText}
-          </span>
+          <div className="flex flex-col items-end gap-2">
+            <span className="rounded-full border border-[var(--line)] bg-white/80 px-3 py-1 text-xs text-[var(--muted)]">
+              {recordCountText}
+            </span>
+            <button
+              className="rounded-full bg-white px-3 py-1 text-xs text-[var(--ink)] ring-1 ring-[var(--line)]"
+              onClick={() => void onLogout()}
+              type="button"
+            >
+              退出登录
+            </button>
+          </div>
         </div>
 
         <div className="mt-4 flex flex-wrap gap-2 text-xs">
