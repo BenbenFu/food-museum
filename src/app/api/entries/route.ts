@@ -20,7 +20,7 @@ export async function GET(request: Request) {
     let query = supabaseServer
       .from("food_entries")
       .select(
-        "id,eaten_at,food_name,place_brand,price,image_url,image_width,image_height,created_at"
+        "id,eaten_at,food_name,place_brand,price,image_url,image_path,image_width,image_height,created_at"
       )
       .order("created_at", { ascending: false })
       .limit(PAGE_SIZE + 1);
@@ -32,7 +32,14 @@ export async function GET(request: Request) {
       return NextResponse.json({ message: withHint(error.message) }, { status: 500 });
     }
 
-    const rows = data ?? [];
+    const rows =
+      data?.map((row) => ({
+        ...row,
+        image_url:
+          row.image_path
+            ? supabaseServer.storage.from(env.supabaseBucket).getPublicUrl(row.image_path).data.publicUrl
+            : row.image_url
+      })) ?? [];
     const hasMore = rows.length > PAGE_SIZE;
     const page = hasMore ? rows.slice(0, PAGE_SIZE) : rows;
     const nextCursor = hasMore ? page[page.length - 1]?.created_at ?? null : null;
